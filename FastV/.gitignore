@@ -1,0 +1,11 @@
+# .gitignore
+__pycache__/
+
+*_eval_fastv/
+
+data/
+models/
+backup/
+output_example/
+results/
+figs/

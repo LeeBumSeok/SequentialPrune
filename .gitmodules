@@ -1,0 +1,3 @@
+[submodule "FastV/eval/MileBench_main/HIP"]
+	path = FastV/eval/MileBench_main/HIP
+	url = https://github.com/ROCm/HIP
