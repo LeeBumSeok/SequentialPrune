@@ -3,9 +3,13 @@ __pycache__/
 
 *_eval_fastv/
 
-data/
-models/
-backup/
-output_example/
-results/
-figs/
+/data
+/models
+/backup
+/output_example
+/results
+/figs
+/gradio_temp
+
+!src/transformers/src/transformers/data
+!src/transformers/src/transformers/models/

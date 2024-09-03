@@ -59,6 +59,8 @@ from matplotlib.colors import LogNorm
 from io import BytesIO
 from PIL import Image
 
+from icecream import ic
+
 
 def visualize_attention(
     multihead_attention, title="Layer 5", sample_style="All layers"
@@ -160,6 +162,40 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-path", type=str, required=False, default="./llava-v1.5-7b"
     )
+    parser.add_argument(
+        "--use-fast-v", default=False, action="store_true", help="whether to use fast-v"
+    )
+    parser.add_argument(
+        "--fast-v-inplace",
+        default=False,
+        action="store_true",
+        help="whether to use fast-v inplace version to check real latency, no supported kv cache yet",
+    )
+    parser.add_argument(
+        "--fast-v-sys-length",
+        type=int,
+        required=False,
+        help="the length of system prompt",
+    )
+    parser.add_argument(
+        "--fast-v-image-token-length",
+        type=int,
+        required=False,
+        help="the length of image token",
+    )
+    parser.add_argument(
+        "--fast-v-attention-rank",
+        type=int,
+        required=False,
+        help="the rank of attention matrix",
+    )
+    parser.add_argument(
+        "--fast-v-agg-layer",
+        type=int,
+        required=False,
+        help="the layer of attention matrix",
+    )
+
     pargs = parser.parse_args()
 
     examples = [
@@ -211,7 +247,16 @@ if __name__ == "__main__":
     else:
         args.conv_mode = conv_mode
 
-    model.config.use_fast_v = False
+    if pargs.use_fast_v == True:
+        model.config.use_fast_v = True
+        model.config.fast_v_inplace = pargs.fast_v_inplace
+        model.config.fast_v_sys_length = pargs.fast_v_sys_length
+        model.config.fast_v_image_token_length = pargs.fast_v_image_token_length
+        model.config.fast_v_attention_rank = pargs.fast_v_attention_rank
+        model.config.fast_v_agg_layer = pargs.fast_v_agg_layer
+    else:
+        model.config.use_fast_v = False
+
     model.model.reset_fastv()
 
     total_layers = model.config.num_hidden_layers
@@ -300,6 +345,18 @@ if __name__ == "__main__":
             keywords = [stop_str]
             stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
 
+            image_token_indices = (input_ids == IMAGE_TOKEN_INDEX).nonzero(
+                as_tuple=True
+            )
+
+            image_index = []
+
+            for batch_index, seq_index in zip(*image_token_indices):
+                image_index.append(seq_index.item())
+
+            model.config.image_token_index = image_index
+            model.model.load_image_index()
+
             with torch.inference_mode():
                 start = time.time()
                 output_ids = model.generate(
@@ -386,7 +443,9 @@ if __name__ == "__main__":
         pil_image.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-    fastv_tradeoff = pil_to_base64("/home/work/workspace_bum/FastV/figs/example.jpg")
+    fastv_tradeoff = pil_to_base64(
+        "/home/work/workspace_bum/Tokenpruning/FastV/figs/example.jpg"
+    )
     attn_map = pil_to_base64("figs/attn_map.png")
 
     description = f"""# FastV Demo
