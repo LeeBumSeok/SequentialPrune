@@ -6,9 +6,14 @@ import pandas as pd
 from workers.model_workers import (
     LLaVA
 )
+from workers.internvl_worker import (
+    InternVL
+)
 from datasets import load_from_disk,load_dataset
 name2worker = {
     'llava-v1.5-7b':LLaVA,
+    'InternVL-LLava-7B':InternVL,
+    'llava-v1.5-13b':LLaVA,
 }
 
 MAX_NUM = 500

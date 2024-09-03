@@ -14,9 +14,8 @@ import warnings
 from icecream import ic
 
 warnings.simplefilter(action='ignore', category=FutureWarning) #
-ANLS_DOCVQA_IMG_DIR = "/home/work/workspace_bum/FastV/data/docvqa/spdocvqa_images/"
-ANLS_DOCVQA_ANN = "/home/work/workspace_bum/FastV/data/docvqa/spdocvqa_imdb/imdb_val.npy"
-
+ANLS_DOCVQA_IMG_DIR = "/home/work/workspace_bum/Tokenpruning/FastV/data/docvqa/spdocvqa_images"
+ANLS_DOCVQA_ANN = "/home/work/workspace_bum/Tokenpruning/FastV/data/docvqa/spdocvqa_imdb/imdb_val.npy"
 ROUGE_OCRVQA_ANN = "/workspace/eval/OCR-VQA"
 
 def parse_args():
@@ -52,34 +51,33 @@ def split_data(data):
             data_dict[n_img] = [d]
     return data_dict
 
-def save(results, accelerator, args):
-    if accelerator.is_main_process:
-        if args.dataset_name == 'Rouge_OCR_VQA':
-            filtered_results = []
-            for result in results:
-                result['image'] = ["skip"]
-                filtered_results.append(result)
-            if os.path.exists(args.output_pth):
-                if not args.overwrite:
-                    print(f'{args.output_pth} exists. Please pass `--overwrite` to avoid unwanted overwriting.')
-                    exit(0)
+def save(results, args):
+    if args.dataset_name == 'Rouge_OCR_VQA':
+        filtered_results = []
+        for result in results:
+            result['image'] = ["skip"]
+            filtered_results.append(result)
+        if os.path.exists(args.output_pth):
+            if not args.overwrite:
+                print(f'{args.output_pth} exists. Please pass `--overwrite` to avoid unwanted overwriting.')
+                exit(0)
 
-            json.dump(filtered_results, open(args.output_pth, 'w'), ensure_ascii=False, indent=4)
-            print(f"Saved {len(filtered_results)} results to {args.output_pth}")
-        else:
-            if os.path.exists(args.output_pth):
-                if not args.overwrite:
-                    print(f'{args.output_pth} exists. Please pass `overwrite=True` to avoid unwanted overwriting.')
-                    exit(0)
-            json.dump(results, open(args.output_pth, 'w'), ensure_ascii=False, indent=4)
+        json.dump(filtered_results, open(args.output_pth, 'w'), ensure_ascii=False, indent=4)
+        print(f"Saved {len(filtered_results)} results to {args.output_pth}")
+    else:
+        if os.path.exists(args.output_pth):
+            if not args.overwrite:
+                print(f'{args.output_pth} exists. Please pass `overwrite=True` to avoid unwanted overwriting.')
+                exit(0)
+        json.dump(results, open(args.output_pth, 'w'), ensure_ascii=False, indent=4)
 
 def main(args):
     import torch.distributed as dist
 
-    accelerator = Accelerator()
-    accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.bsz
-    accelerator.state.deepspeed_plugin.deepspeed_config['train_batch_size'] = args.bsz * dist.get_world_size()
-    accelerator.print(f'{datetime.now()}: Generation of {args.model_name} to {args.dataset_name}')
+    # accelerator = Accelerator()
+    # accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.bsz
+    # accelerator.state.deepspeed_plugin.deepspeed_config['train_batch_size'] = args.bsz * dist.get_world_size()
+    # accelerator.print(f'{datetime.now()}: Generation of {args.model_name} to {args.dataset_name}')
 
     ######################### Loading Data #########################
     data_dir = args.data_dir
@@ -113,7 +111,7 @@ def main(args):
     config.device = device
     worker = worker_class.from_config(config=config)
     # prepare model for accelerator
-    worker.model = accelerator.prepare(worker.model)
+    # worker.model = accelerator.prepare(worker.model)
 
     ################################################################
     ###################### Start Generating ########################
@@ -145,22 +143,17 @@ def main(args):
                                 num_workers=8,
                                 collate_fn=lc_dataset.collate_fn,
                                 pin_memory=True)
-        lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
-
+        # lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
 
         # dataloader 반복문
-        for batch_idx, batch in enumerate(tqdm(lc_dataloader) if accelerator.is_main_process else lc_dataloader):
+        for batch_idx, batch in enumerate(tqdm(lc_dataloader)):
             # 데이터로더에서 데이터 꺼내는 시간 측정
             # output 구하는 시간 측정
-            start_time = time.time()
             outputs = worker(device=accelerator.device, **batch) # list[dict], with the key "answer" added to each item
-            output_time = time.time() - start_time
-            print(outputs)
-            all_predictions = accelerator.gather_for_metrics(outputs)
+            all_predictions = outputs
             prediction_results.extend(all_predictions)
 
         # remove the repetition
-        accelerator.wait_for_everyone()
         prediction_results = list({item['sample_id']: item for item in prediction_results}.values())
         print(f'Generation done {len(prediction_results)}')
         gc.collect()
@@ -187,25 +180,19 @@ def main(args):
                                     num_workers=8,
                                     collate_fn=lc_dataset.collate_fn,
                                     pin_memory=True)
-            lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
-            # ic(max(int(args.batch_image/n_img),1))
-            # start inference
-            for batch in tqdm(lc_dataloader) if accelerator.is_main_process else lc_dataloader:
-                outputs = worker(device=accelerator.device, **batch) # list[dict], with the key "answer" added to each item
-                print(outputs)
-                all_predictions = accelerator.gather_for_metrics(outputs)
+            # lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
+
+            for batch in tqdm(lc_dataloader):
+                outputs = worker(device=device, **batch) # list[dict], with the key "answer" added to each item
+                all_predictions = outputs
                 prediction_results.extend(all_predictions)
             # remove the repetition
-            accelerator.wait_for_everyone()
             prediction_results = list({item['sample_id']: item for item in prediction_results}.values())
             print(f'Generation done {len(prediction_results)}')
             gc.collect()
             torch.cuda.empty_cache()
 
-    ######################### Save Result ##########################
-    save(prediction_results, accelerator, args)
-    ################################################################
-
+    save(prediction_results, args)
 
 if __name__ == '__main__':
     args = parse_args()

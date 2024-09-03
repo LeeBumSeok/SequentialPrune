@@ -2698,9 +2698,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
 
         with ContextManagers(init_contexts):
             # print(config)
-            from icecream import ic
-            ic(model_args)
-            ic(model_kwargs)
             model_kwargs = dict()
             model = cls(config, *model_args, **model_kwargs)
 

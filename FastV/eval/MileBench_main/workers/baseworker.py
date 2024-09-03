@@ -18,7 +18,6 @@ class BaseWorker():
         return cls(**kwargs)
 
     def forward(self, questions: list[str], image_paths: list[str, list], device, gen_kwargs) -> list[str]:
-
         raise NotImplementedError
 
     def __call__(self, device, **kwargs: Any) -> Any:
