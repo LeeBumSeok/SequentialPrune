@@ -80,7 +80,16 @@ def main(args):
 
     # Convert JSON to DataFrame & Save to CSV
     df = parse_json_to_df(result)
-    df.to_csv(os.path.join(result_dir, 'result.csv'), index=False)
+
+    csv_path = os.path.join(result_dir, 'result.csv')
+
+    # Check if the CSV file already exists
+    if os.path.exists(csv_path):
+        # Append to the existing CSV, do not write the header again
+        df.to_csv(csv_path, mode='a', header=False, index=False)
+    else:
+        # Create the CSV file with headers
+        df.to_csv(csv_path, mode='w', header=True, index=False)
 
 
 
@@ -93,6 +102,6 @@ if __name__ == '__main__':
 
 '''
 python score.py \
-    --result-dir outputs \
+    --result-dir outputs_baseline \
     --models llava-v1.5-7b
 '''

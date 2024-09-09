@@ -156,23 +156,17 @@ def load_pretrained_model(
                     model_path, low_cpu_mem_usage=True, **kwargs
                 )
             else:
-                from icecream import ic
+                # from icecream import ic
 
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                if "13b" in model_path:
-                    with init_empty_weights():
-                        model = LlavaLlamaForCausalLM.from_pretrained(
-                            model_path, low_cpu_mem_usage=True, **kwargs
-                        )
-                    model = load_checkpoint_and_dispatch(
-                        model, checkpoint=model_path, offload_state_dict=True
-                    )
-                    for k, v in model.hf_device_map.items():
-                        ic(k, v)
-                else:
+                # device_map={cpu:"80GiB"} 
+                with init_empty_weights():
                     model = LlavaLlamaForCausalLM.from_pretrained(
                         model_path, low_cpu_mem_usage=True, **kwargs
                     )
+                model = load_checkpoint_and_dispatch(
+                    model, checkpoint=model_path, offload_state_dict=True,
+                )
     else:
         # Load language model
         if model_base is not None:

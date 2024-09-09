@@ -2,8 +2,8 @@ from typing import Any
 
 
 class BaseWorker():
-    def __init__(self, config) -> None:
-        self.init_components(config)
+    def __init__(self, config, args) -> None:
+        self.init_components(config,args)
         self.gen_kwargs = config.get('gen_kwargs', {})
         self.model_id = config.model_name
 

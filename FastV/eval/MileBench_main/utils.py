@@ -16,7 +16,7 @@ name2worker = {
     'llava-v1.5-13b':LLaVA,
 }
 
-MAX_NUM = 500
+MAX_NUM = 200
 from tqdm import tqdm
 def get_worker_class(name):
     return name2worker[name]
@@ -299,7 +299,7 @@ class ROUGE_OCR_VQA_Dataset(Dataset):
         self.dataset_ocrvqa_images = []
         self.dataset_ocrvqa_prompts = []
         self.dataset_ocrvqa_labels = []
-        self.annotation = load_dataset("/home/work/workspace_bum/FastV/data/OCR-VQA")['validation']
+        self.annotation = load_dataset("/home/work/workspace_bum/Tokenpruning/FastV/data/OCR-VQA")['validation']
         cur_num=0
         for i in tqdm(self.annotation):
             cur_num += 1

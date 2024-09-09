@@ -400,6 +400,9 @@ if __name__ == "__main__":
         model_output_ori, outputs_attention, time_cost = temp_inference(prompts, images)
         # time cost in seconds
 
+        ic(prompts)
+        ic(images)
+
         model_output, outputs_attention = temp_inference(
             prompts, images, append_output=model_output_ori[0]
         )

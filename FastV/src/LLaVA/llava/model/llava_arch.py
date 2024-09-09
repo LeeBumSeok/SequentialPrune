@@ -44,7 +44,6 @@ class LlavaMetaModel:
         mm_vision_select_feature = model_args.mm_vision_select_feature
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
 
-
         self.config.mm_vision_tower = vision_tower
 
         vision_tower = build_vision_tower(model_args)
@@ -97,6 +96,7 @@ class LlavaMetaForCausalLM(ABC):
 
     def encode_images(self, images):
         image_features = self.get_model().get_vision_tower()(images)
+        # print(image_features)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 
