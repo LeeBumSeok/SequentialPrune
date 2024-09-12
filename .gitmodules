@@ -3,4 +3,9 @@
 	url = https://github.com/ROCm/HIP
 [submodule "FastV/eval/VLMEvalKit"]
 	path = FastV/eval/VLMEvalKit
-	url = https://github.com/open-compass/VLMEvalKit
+  url = https://github.com/open-compass/VLMEvalKit
+  ignore = dirty
+[submodule "FastV/eval/MileBench_main/HIP"]
+  path = FastV/eval/MileBench_main
+  url = https://github.com/MileBench/MileBench
+  ignore = dirty
