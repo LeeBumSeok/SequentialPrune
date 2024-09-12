@@ -15,12 +15,27 @@ name2worker = {
     'InternVL-LLava-7B':InternVL,
     'llava-v1.5-13b':LLaVA,
 }
-
+import pandas as pd
 MAX_NUM = 200
 from tqdm import tqdm
 def get_worker_class(name):
     return name2worker[name]
 
+def log_time_to_csv(dataset_name, total_time, output_csv="timing_log.csv"):
+    # Check if the CSV file exists
+    if os.path.exists(output_csv):
+        # Load existing data
+        df = pd.read_csv(output_csv)
+    else:
+        # Create a new DataFrame if the CSV does not exist
+        df = pd.DataFrame(columns=["dataset_name", "total_time"])
+
+    # Append new data
+    df = df.append({"dataset_name": dataset_name, "total_time": total_time}, ignore_index=True)
+
+    # Save the DataFrame back to CSV
+    df.to_csv(output_csv, index=False)
+    print(f"Logged {dataset_name} with time {total_time} seconds to {output_csv}")
 
 class MileBenchDataset(Dataset):
     def __init__(

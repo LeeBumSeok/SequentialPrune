@@ -10,6 +10,7 @@ from utils import (
     MileBenchDataset,
     ANLS_DocVQA_Dataset,
     ROUGE_OCR_VQA_Dataset,
+    log_time_to_csv,
 )
 from omegaconf import OmegaConf
 import time
@@ -79,12 +80,6 @@ def parse_args():
         required=False,
         help="the layer of attention matrix",
     )
-    parser.add_argument(
-        "--fast-v-sequential-prune",
-        default=False,
-        action="store_true",
-        help="sequential_prune",
-    )
     args = parser.parse_args()
     if args.use_fast_v:
         args.output_pth = os.path.join(
@@ -109,6 +104,7 @@ def split_data(data):
     data_dict = {}
     for d in data:
         n_img = len(d["task_instance"]["images_path"])
+        n_img = 1
         if n_img in data_dict:
             data_dict[n_img].append(d)
         else:
@@ -180,7 +176,6 @@ def main(args):
         # split data by images number
         data_dict = split_data(core_annotation["data"])
     ################################################################
-
     #################### Initializing Worker ######################
     worker_class = get_worker_class(args.model_name)
     models_configs = OmegaConf.load(args.model_configs)
@@ -221,6 +216,7 @@ def main(args):
                 tokenizer=worker.tokenizer,
                 dataset_name=dataset_name,
             )
+        lc_dataset = lc_dataset[:10]
         lc_dataloader = DataLoader(
             dataset=lc_dataset,
             batch_size=1,
@@ -229,18 +225,15 @@ def main(args):
             collate_fn=lc_dataset.collate_fn,
             pin_memory=True,
         )
-        # lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
-
-        # dataloader 반복문
+        start_time = time.time()
         for batch_idx, batch in enumerate(tqdm(lc_dataloader)):
-            # 데이터로더에서 데이터 꺼내는 시간 측정
-            # output 구하는 시간 측정
             outputs = worker(
                 device=device, **batch
             )  # list[dict], with the key "answer" added to each item
             all_predictions = outputs
             prediction_results.extend(all_predictions)
-
+        end_time = time.time()
+        total_time = end_time - start_time
         # remove the repetition
         prediction_results = list(
             {item["sample_id"]: item for item in prediction_results}.values()
@@ -264,6 +257,7 @@ def main(args):
                 dataset_name=dataset_name,
                 combine_image=combine_image,
             )
+            lc_dataset = lc_dataset[:10]
             lc_dataloader = DataLoader(
                 dataset=lc_dataset,
                 batch_size=max(int(args.batch_image / n_img), 1),
@@ -272,12 +266,15 @@ def main(args):
                 collate_fn=lc_dataset.collate_fn,
                 pin_memory=True,
             )
+            start_time = time.time()
             for batch in tqdm(lc_dataloader):
                 outputs = worker(
                     device=device, **batch
                 )  # list[dict], with the key "answer" added to each item
                 all_predictions = outputs
                 prediction_results.extend(all_predictions)
+            end_time = time.time()
+            total_time = end_time - start_time
             # remove the repetition
             prediction_results = list(
                 {item["sample_id"]: item for item in prediction_results}.values()
@@ -287,7 +284,7 @@ def main(args):
             torch.cuda.empty_cache()
 
     save(prediction_results, args)
-
+    log_time_to_csv(dataset_name,total_time)
 
 if __name__ == "__main__":
     args = parse_args()

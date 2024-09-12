@@ -3,7 +3,7 @@ import sys
 from PIL import Image
 import torch
 from icecream import ic
-
+from torch.cuda.amp import autocast
 ######################## Multi-image application ########################
 
 
@@ -34,6 +34,8 @@ class LLaVA(BaseWorker):
             self.model.config.fast_v_image_token_length = args.fast_v_image_token_length
             self.model.config.fast_v_attention_rank = args.fast_v_attention_rank
             self.model.config.fast_v_agg_layer = args.fast_v_agg_layer
+            self.model.config.fast_v_agg_layer = args.fast_v_sequential_prune
+
         else:
             self.use_cache = True
             self.model.config.use_fast_v = False
@@ -105,7 +107,7 @@ class LLaVA(BaseWorker):
                 .to(device)
             )
             # Fast V 허깅페이스 버전으로 인한 문제
-            with torch.autocast(device, torch.bfloat16):
+            with autocast(dtype=torch.bfloat16):
                 torch.cuda.empty_cache()
                 output_ids = self.model.generate(
                     input_ids,

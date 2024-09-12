@@ -157,16 +157,22 @@ def load_pretrained_model(
                 )
             else:
                 # from icecream import ic
-
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                # device_map={cpu:"80GiB"} 
+                # device_map={cpu:"80GiB"}
                 with init_empty_weights():
                     model = LlavaLlamaForCausalLM.from_pretrained(
                         model_path, low_cpu_mem_usage=True, **kwargs
                     )
                 model = load_checkpoint_and_dispatch(
-                    model, checkpoint=model_path, offload_state_dict=True,
+                    model,
+                    checkpoint=model_path,
+                    offload_state_dict=True,
+                    device_map="auto",
+                    no_split_module_classes="LlamaDecoderLayer",
                 )
+                from icecream import ic
+
+                ic(model.hf_device_map)
     else:
         # Load language model
         if model_base is not None:
