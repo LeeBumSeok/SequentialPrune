@@ -129,6 +129,7 @@ class LlamaConfig(PretrainedConfig):
         fast_v_agg_layer=None,
         use_fast_v=False,
         fast_v_inplace=False,
+        fast_v_sequential_prune=False,
         image_token_index=None,
         **kwargs,
     ):
@@ -159,7 +160,7 @@ class LlamaConfig(PretrainedConfig):
         self.fast_v_agg_layer = fast_v_agg_layer
         self.use_fast_v = use_fast_v
         self.fast_v_inplace = fast_v_inplace
-
+        self.fast_v_sequential_prune = fast_v_sequential_prune
         # multi-image config
         self.image_token_index = image_token_index
 

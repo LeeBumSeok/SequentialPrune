@@ -710,6 +710,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self.fast_v_attention_rank = config.fast_v_attention_rank
         self.fast_v_agg_layer = config.fast_v_agg_layer
         self.fast_v_inplace = config.fast_v_inplace
+        self.fast_v_sequential_prune = config.fast_v_sequential_prune
 
     def reset_fastv(self):
         self.use_fast_v = self.config.use_fast_v
@@ -717,7 +718,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self.fast_v_image_token_length = self.config.fast_v_image_token_length
         self.fast_v_attention_rank = self.config.fast_v_attention_rank
         self.fast_v_agg_layer = self.config.fast_v_agg_layer
-        self.fast_v_inplace = self.config.fast_v_inplace
+        self.fast_v_sequential_prune = self.config.fast_v_sequential_prune
         ic(self.use_fast_v)
 
     def get_input_embeddings(self):
@@ -852,7 +853,6 @@ class LlamaModel(LlamaPreTrainedModel):
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
             past_key_value = (
                 past_key_values[idx] if past_key_values is not None else None
             )
@@ -872,6 +872,160 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_ids,
                     None,
                 )
+            elif self.fast_v_sequential_prune: # False
+                USE_FAST_V = self.use_fast_v
+                SYS_LENGTH = self.fast_v_sys_length
+                IMAGE_TOKEN_LENGTH = self.fast_v_image_token_length
+                ATTENTION_RANK = self.fast_v_attention_rank
+                AGG_LAYER = self.fast_v_agg_layer
+                FASTV_INPLACE = self.fast_v_inplace
+
+                if AGG_LAYER:
+                    assert AGG_LAYER > 0, "K should be larger than 0"
+
+                if USE_FAST_V:
+                    if idx < AGG_LAYER:
+                        new_attention_mask = torch.ones(
+                            (batch_size, seq_length_with_past),
+                            dtype=torch.bool,
+                            device=inputs_embeds.device,
+                        )
+                        new_attention_mask = self._prepare_decoder_attention_mask(
+                            new_attention_mask,
+                            (batch_size, seq_length),
+                            inputs_embeds,
+                            past_key_values_length,
+                        )
+                    elif idx >= AGG_LAYER:
+                        total_layers_to_prune = min(10, int(1 / 0.1 * ATTENTION_RANK))
+                        current_prune_ratio = 0.1 * (idx - AGG_LAYER + 1)
+
+                        if idx - AGG_LAYER < total_layers_to_prune:
+                            if idx - AGG_LAYER == total_layers_to_prune - 1:
+                                current_prune_ratio = ATTENTION_RANK
+
+                            last_layer_attention = layer_outputs[1]
+                            last_layer_attention_avg = torch.mean(
+                                last_layer_attention.squeeze(), dim=0
+                            )[-1]
+
+                            image_token_indices = []
+                            if type(image_indices) != list:
+                                image_indices = image_indices[0].tolist()
+
+                            for image_index in range(len(image_indices)):
+                                if image_index == 0:
+                                    image_token_indices.append(
+                                        torch.arange(
+                                            image_indices[image_index],
+                                            image_indices[image_index]
+                                            + IMAGE_TOKEN_LENGTH,
+                                        )
+                                    )
+                                else:
+                                    last_layer_last_image_index = image_token_indices[
+                                        -1
+                                    ][-1]
+                                    image_token_indices.append(
+                                        torch.arange(
+                                            last_layer_last_image_index
+                                            + (
+                                                image_indices[image_index]
+                                                - image_indices[image_index - 1]
+                                            ),
+                                            last_layer_last_image_index
+                                            + (
+                                                image_indices[image_index]
+                                                - image_indices[image_index - 1]
+                                            )
+                                            + IMAGE_TOKEN_LENGTH,
+                                        )
+                                    )
+
+                            last_layer_attention_avg_image = []
+                            for img_idx in image_token_indices:
+                                last_layer_attention_avg_image.append(
+                                    last_layer_attention_avg[img_idx]
+                                )
+
+                            last_layer_attention_avg_image = torch.concat(
+                                last_layer_attention_avg_image, dim=0
+                            )
+
+                            # 이전에 prune된 토큰들을 제외한 top-k 계산
+                            if pruned_indices_per_layer:
+                                all_pruned_indices = torch.cat(
+                                    [
+                                        indices - image_indices[0]
+                                        for indices in pruned_indices_per_layer
+                                    ]
+                                )
+                                last_layer_attention_avg_image[all_pruned_indices] = (
+                                    -float("inf")
+                                )
+
+                            top_attention_rank_index = (
+                                last_layer_attention_avg_image.topk(
+                                    int((1 - current_prune_ratio) * IMAGE_TOKEN_LENGTH)
+                                ).indices
+                                + image_indices[0]
+                            )
+
+                            # 새로운 attention mask 생성
+                            gen_attention_mask = torch.ones(
+                                (batch_size, seq_length_with_past),
+                                dtype=torch.bool,
+                                device=inputs_embeds.device,
+                            )
+
+                            try:
+                                image_token_indices = torch.cat(image_token_indices)
+                            except:
+                                pass
+
+                            gen_attention_mask[:, image_token_indices] = False
+                            gen_attention_mask[:, top_attention_rank_index] = True
+
+                            gen_attention_mask = self._prepare_decoder_attention_mask(
+                                gen_attention_mask,
+                                (batch_size, seq_length),
+                                inputs_embeds,
+                                past_key_values_length,
+                            )
+
+                            new_attention_mask = gen_attention_mask
+
+                            # prune된 인덱스를 저장해 다음 레이어에서 반영
+                            all_indices = torch.arange(
+                                image_indices[0],
+                                last_layer_attention_avg_image.size(0)
+                                + image_indices[0],
+                            )
+                            pruned_indices_per_layer.append(
+                                torch.tensor(
+                                    [
+                                        i
+                                        for i in all_indices
+                                        if i not in top_attention_rank_index
+                                    ]
+                                )
+                            )
+
+                            pruned_indices_per_layer = [pruned_indices_per_layer[-1]]
+                        else:
+                            new_attention_mask = attention_mask
+                    else:
+                        new_attention_mask = attention_mask
+
+                # print(idx,hidden_states.shape,new_attention_mask.shape,position_ids.shape)
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=new_attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                )
             else:
                 USE_FAST_V = self.use_fast_v
                 SYS_LENGTH = self.fast_v_sys_length
@@ -879,66 +1033,11 @@ class LlamaModel(LlamaPreTrainedModel):
                 try:
                     ATTENTION_RANK = int(IMAGE_TOKEN_LENGTH * (1 - self.fast_v_attention_rank))
                 except:
-                    pass
+                    ATTENTION_RANK = None
                 AGG_LAYER = self.fast_v_agg_layer
                 FASTV_INPLACE = self.fast_v_inplace
-
                 if AGG_LAYER:
                     assert AGG_LAYER > 0, "K should be larger than 0"
-
-                # # FastV Token Rerank, Token Drop Implementation, KV-Cache not supported
-                # if USE_FAST_V and FASTV_INPLACE:
-                #     if idx < AGG_LAYER:
-                #         new_attention_mask = attention_mask
-
-                #     elif idx == AGG_LAYER:
-                #         # compute pruned tokens, generate fastv sign
-                #         last_layer_attention = layer_outputs[1]
-                #         # compute average attention over different head
-                #         last_layer_attention_avg = torch.mean(
-                #             last_layer_attention, dim=1
-                #         )[0]
-                #         # generate new attention mask based on the average attention, sample the top ATTENTION_RANK tokens with highest attention
-                #         last_layer_attention_avg_last_tok = last_layer_attention_avg[-1]
-                #         # get the attention in image token
-                #         last_layer_attention_avg_last_tok_image = (
-                #             last_layer_attention_avg_last_tok[
-                #                 SYS_LENGTH : SYS_LENGTH + IMAGE_TOKEN_LENGTH
-                #             ]
-                #         )
-                #         # get the indexs of the top ATTENTION_RANK tokens
-                #         top_attention_rank_index = (
-                #             last_layer_attention_avg_last_tok_image.topk(
-                #                 ATTENTION_RANK
-                #             ).indices
-                #             + SYS_LENGTH
-                #         )
-                #         # keep index
-                #         keep_indexs = torch.cat(
-                #             (
-                #                 torch.arange(SYS_LENGTH, device=device),
-                #                 top_attention_rank_index,
-                #                 torch.arange(
-                #                     SYS_LENGTH + IMAGE_TOKEN_LENGTH,
-                #                     seq_length_with_past,
-                #                     device=device,
-                #                 ),
-                #             )
-                #         )
-                #         # sort index
-                #         keep_indexs = keep_indexs.sort().values
-                #         # update seq length
-                #         new_seq_length = keep_indexs.shape[0]
-                #         # filter hidden states
-                #         hidden_states = hidden_states[:, keep_indexs, :]
-                #         # update position ids
-                #         position_ids = keep_indexs.unsqueeze(0)
-                #         # update attention mask
-                #         new_attention_mask = self._prepare_decoder_attention_mask(
-                #             None, (batch_size, new_seq_length), inputs_embeds, 0
-                #         )
-                # # FastV Token Rerank, Attention Mask Implementation
-                # elif
                 if USE_FAST_V:
                     if idx < AGG_LAYER:
                         new_attention_mask = torch.ones(
@@ -998,22 +1097,11 @@ class LlamaModel(LlamaPreTrainedModel):
                                 )
                                 
                             last_layer_attention_avg_image = torch.concat(last_layer_attention_avg_image, dim=0)
-                            # breakpoint()
-                            # get the indexs of the top ATTENTION_RANK tokens
                             top_attention_rank_index = (
                                 last_layer_attention_avg_image
                                 .topk(ATTENTION_RANK)
                                 .indices + image_indices[0]
                             )
-                            # length(576)
-                            # 100~676
-
-                            # 0~576
-                           
-                            # ic(image_indices)
-                            # ic(image_token_indices)
-                            # ic(top_attention_rank_index)
-                            # generate new attention mask
                             gen_attention_mask = torch.ones(
                                 (batch_size, seq_length_with_past),
                                 dtype=torch.bool,
@@ -1021,10 +1109,7 @@ class LlamaModel(LlamaPreTrainedModel):
                             )
 
                             image_token_indices = torch.cat(image_token_indices)
-                            # breakpoint()
-                            # 1. image_token_indices 위치에 False 할당
-                            gen_attention_mask[:, image_token_indices] = False  # 1 1357
-                            # 이후 top_attention_rank_index에 해당하는 위치를 True로 처리
+                            gen_attention_mask[:, image_token_indices] = False 
                             gen_attention_mask[:, top_attention_rank_index] = True 
 
                             gen_attention_mask = self._prepare_decoder_attention_mask(
@@ -1068,8 +1153,6 @@ class LlamaModel(LlamaPreTrainedModel):
                 else:
                     new_attention_mask = attention_mask
 
-                # print(idx,hidden_states.shape,new_attention_mask.shape,position_ids.shape)
-
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=new_attention_mask,
@@ -1078,6 +1161,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                 )
+
             hidden_states = layer_outputs[0]
 
             if use_cache:
@@ -1086,7 +1170,6 @@ class LlamaModel(LlamaPreTrainedModel):
             if output_attentions:
                 pass
                 # all_self_attns += (layer_outputs[1],)
-            # 0 1 2 =? 0 hidden, 1 attn_score,
         hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
