@@ -4,6 +4,7 @@ from PIL import Image
 import torch
 from icecream import ic
 from torch.cuda.amp import autocast
+
 ######################## Multi-image application ########################
 
 
@@ -55,7 +56,7 @@ class LLaVA(BaseWorker):
             else self.conv_temp.sep2
         )
         self.keywords = [stop_str]
-        self.model.cuda()
+        # self.model.cuda()
         self.model.eval()
 
     def forward(self, questions, image_paths, device, gen_kwargs):
@@ -74,7 +75,8 @@ class LLaVA(BaseWorker):
                 if images_path == []:
                     image_tensor = None
                 else:
-                    image_tensor = process_images([
+                    image_tensor = process_images(
+                        [
                             Image.open(image_path).convert("RGB")
                             for image_path in images_path
                         ],

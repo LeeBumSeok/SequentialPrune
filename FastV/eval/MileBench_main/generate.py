@@ -88,8 +88,8 @@ def parse_args():
     args = parser.parse_args()
     if args.use_fast_v:
         args.output_pth = os.path.join(
-                args.output_dir, f"{args.dataset_name}/pred.json"
-            )
+            args.output_dir, f"{args.dataset_name}/pred.json"
+        )
     else:
         args.output_pth = os.path.join(
             args.output_dir, f"{args.model_name}/{args.dataset_name}/pred.json"
@@ -193,7 +193,7 @@ def main(args):
         raise ValueError
     config = models_configs[args.model_name]
     config.device = device
-    worker = worker_class.from_config(config=config,args=args)
+    worker = worker_class.from_config(config=config, args=args)
     # prepare model for accelerator
     # worker.model = accelerator.prepare(worker.model)
 
@@ -235,11 +235,20 @@ def main(args):
         for batch_idx, batch in enumerate(tqdm(lc_dataloader)):
             # 데이터로더에서 데이터 꺼내는 시간 측정
             # output 구하는 시간 측정
-            outputs = worker(
-                device=device, **batch
-            )  # list[dict], with the key "answer" added to each item
-            all_predictions = outputs
-            prediction_results.extend(all_predictions)
+            try:
+                outputs = worker(
+                    device=device, **batch
+                )  # list[dict], with the key "answer" added to each item
+                all_predictions = outputs
+                prediction_results.extend(all_predictions)
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print("Out of Memory error encountered. Stopping execution.")
+                    torch.cuda.empty_cache()
+                    # Optionally, you can raise an error or exit the program
+                    raise e  # or use sys.exit(1) to stop the execution
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
 
         # remove the repetition
         prediction_results = list(
@@ -273,11 +282,20 @@ def main(args):
                 pin_memory=True,
             )
             for batch in tqdm(lc_dataloader):
-                outputs = worker(
-                    device=device, **batch
-                )  # list[dict], with the key "answer" added to each item
-                all_predictions = outputs
-                prediction_results.extend(all_predictions)
+                try:
+                    outputs = worker(
+                        device=device, **batch
+                    )  # list[dict], with the key "answer" added to each item
+                    all_predictions = outputs
+                    prediction_results.extend(all_predictions)
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print("Out of Memory error encountered. Stopping execution.")
+                        torch.cuda.empty_cache()
+                        # Optionally, you can raise an error or exit the program
+                        raise e  # or use sys.exit(1) to stop the execution
+                except Exception as e:
+                    print(f"An unexpected error occurred: {e}")
             # remove the repetition
             prediction_results = list(
                 {item["sample_id"]: item for item in prediction_results}.values()
