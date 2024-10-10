@@ -131,6 +131,7 @@ class LlamaConfig(PretrainedConfig):
         fast_v_inplace=False,
         fast_v_sequential_prune=False,
         image_token_index=None,
+        prune_step=10, 
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -161,6 +162,7 @@ class LlamaConfig(PretrainedConfig):
         self.use_fast_v = use_fast_v
         self.fast_v_inplace = fast_v_inplace
         self.fast_v_sequential_prune = fast_v_sequential_prune
+        self.prune_step = prune_step
         # multi-image config
         self.image_token_index = image_token_index
 

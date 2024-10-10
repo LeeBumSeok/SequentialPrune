@@ -24,7 +24,8 @@ def main(args):
             'ALFRED','CLEVR-Change','DocVQA','IEdit','MMCoQA','MultiModalQA',
             'nuscenes','OCR-VQA','SlideVQA','Spot-the-Diff','TQA','WebQA','WikiVQA'
         ],
-        'Diagnostic': ['TextNeedleInAHaystack', 'ImageNeedleInAHaystack', 'GPR1200']
+        'Diagnostic': ['TextNeedleInAHaystack', 'ImageNeedleInAHaystack', 'GPR1200','Rouge_OCR_VQA']
+        ,
     }
 
     ########################## Collect Evaluation Result ##########################

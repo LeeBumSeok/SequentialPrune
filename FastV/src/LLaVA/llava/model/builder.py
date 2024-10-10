@@ -30,7 +30,7 @@ from llava.constants import (
     DEFAULT_IM_START_TOKEN,
     DEFAULT_IM_END_TOKEN,
 )
-
+from icecream import ic
 
 def load_pretrained_model(
     model_path,
@@ -40,6 +40,7 @@ def load_pretrained_model(
     load_4bit=False,
     device_map="auto",
     device="cuda",
+    vlmevalkit=False,
 ):
     kwargs = {"device_map": device_map}
 
@@ -155,24 +156,69 @@ def load_pretrained_model(
                 model = LlavaMptForCausalLM.from_pretrained(
                     model_path, low_cpu_mem_usage=True, **kwargs
                 )
-            else:
-                # from icecream import ic
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                # device_map={cpu:"80GiB"}
-                with init_empty_weights():
-                    model = LlavaLlamaForCausalLM.from_pretrained(
-                        model_path, low_cpu_mem_usage=True, **kwargs
-                    )
-                model = load_checkpoint_and_dispatch(
-                    model,
-                    checkpoint=model_path,
-                    offload_state_dict=True,
-                    device_map="auto",
-                    no_split_module_classes="LlamaDecoderLayer",
-                )
-                from icecream import ic
 
-                ic(model.hf_device_map)
+            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+            # device_map_server = {
+            #             'model.layers.0': 0,
+            #             'model.layers.1': 0,
+            #             'model.layers.2': 0,
+            #             'model.layers.3': 0,
+            #             'model.layers.4': 0,
+            #             'model.layers.5': 0,
+            #             'model.layers.6': 0,
+            #             'model.layers.7': 0,
+            #             'model.layers.8': 0,
+            #             'model.layers.9': 0,
+            #             'model.layers.10': 0,
+            #             'model.layers.11': 0,
+            #             'model.layers.12': 0,
+            #             'model.layers.13': 0,
+            #             'model.layers.14': 0,
+            #             'model.layers.15': 0,
+            #             'model.layers.16': 0,
+            #             'model.layers.17': 0,
+            #             'model.layers.18': 0,
+            #             'model.layers.19': 0,
+            #             'model.layers.20': 0,
+            #             'model.layers.21': 0,
+            #             'model.layers.22': 0,
+            #             'model.layers.23': 0,
+            #             'model.layers.24': 0,
+            #             'model.layers.25': 0,
+            #             'model.layers.26': 0,
+            #             'model.layers.27': 0,
+            #             'model.layers.28': 0,
+            #             'model.layers.29': 0,
+            #             'model.layers.30': 0,
+            #             'model.layers.31': 'cpu',
+            #             'model.layers.32': 'cpu',
+            #             'model.layers.33': 'cpu',
+            #             'model.layers.34': 'cpu',
+            #             'model.layers.35': 'cpu',
+            #             'model.layers.36': 'cpu',
+            #             'model.layers.37': 'cpu',
+            #             'model.layers.38': 'cpu',
+            #             'model.layers.39': 'cpu',
+            #             'model.embed_tokens': 0,
+            #             'model.mm_projector': 0,
+            #             'model.norm': 'cpu',
+            #             'model.vision_tower': 0,
+            #             'lm_head': 'cpu',
+            #         }
+            # with init_empty_weights():
+            #     model = LlavaLlamaForCausalLM.from_pretrained(
+            #         model_path, low_cpu_mem_usage=True, **kwargs
+            #     )
+            # model = load_checkpoint_and_dispatch(
+            #     model,
+            #     checkpoint=model_path,
+            #     device_map=device_map_server,
+            #     no_split_module_classes="LlamaDecoderLayer",
+            # )
+            model = LlavaLlamaForCausalLM.from_pretrained(
+                model_path, low_cpu_mem_usage=True, **kwargs
+            )
+            # ic(model.hf_device_map)
     else:
         # Load language model
         if model_base is not None:
