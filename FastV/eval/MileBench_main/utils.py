@@ -16,7 +16,7 @@ name2worker = {
     'llava-v1.5-13b':LLaVA,
 }
 import pandas as pd
-MAX_NUM = 200
+MAX_NUM = 210
 from tqdm import tqdm
 def get_worker_class(name):
     return name2worker[name]
@@ -324,9 +324,6 @@ class ROUGE_OCR_VQA_Dataset(Dataset):
                 self.dataset_ocrvqa_images.append(i['image'])
                 self.dataset_ocrvqa_prompts.append(question)
                 self.dataset_ocrvqa_labels.append([answer])
-        # ic(len(self.dataset_ocrvqa_images))
-        # ic(len(self.dataset_ocrvqa_prompts))
-        # ic(len(self.dataset_ocrvqa_labels))
 
     def __len__(self):
         return len(self.dataset_ocrvqa_images)

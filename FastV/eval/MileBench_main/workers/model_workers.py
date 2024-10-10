@@ -34,8 +34,8 @@ class LLaVA(BaseWorker):
             self.model.config.fast_v_image_token_length = args.fast_v_image_token_length
             self.model.config.fast_v_attention_rank = args.fast_v_attention_rank
             self.model.config.fast_v_agg_layer = args.fast_v_agg_layer
-            self.model.config.fast_v_agg_layer = args.fast_v_sequential_prune
-
+            self.model.config.fast_v_sequential_prune = args.fast_v_sequential_prune
+            self.model.config.prune_step = args.prune_step
         else:
             self.use_cache = True
             self.model.config.use_fast_v = False
@@ -47,15 +47,21 @@ class LLaVA(BaseWorker):
             )
         else:
             self.single_img_tokens = DEFAULT_IMAGE_TOKEN
-
-        self.conv_temp = conv_templates["llava_llama_2"]
+        ic(args)
+        if args.dataset_name == 'Rouge_OCR_VQA':
+            ic("rouge_ocr_vqa conv")
+            self.conv_temp = conv_templates["llava_v1"]
+        else:
+            ic("milebench conv")
+            self.conv_temp = conv_templates["llava_llama_2"]
+        ic(self.conv_temp)
         stop_str = (
             self.conv_temp.sep
             if self.conv_temp.sep_style != SeparatorStyle.TWO
             else self.conv_temp.sep2
         )
         self.keywords = [stop_str]
-        self.model.cuda()
+        # self.model.cuda()
         self.model.eval()
 
     def forward(self, questions, image_paths, device, gen_kwargs):
@@ -108,7 +114,6 @@ class LLaVA(BaseWorker):
             )
             # Fast V 허깅페이스 버전으로 인한 문제
             with autocast(dtype=torch.bfloat16):
-                torch.cuda.empty_cache()
                 output_ids = self.model.generate(
                     input_ids,
                     images=image_tensor,

@@ -17,7 +17,8 @@ from tqdm import tqdm
 import gc
 import warnings
 from icecream import ic
-
+import csv
+from memory_profiler import memory_usage
 warnings.simplefilter(action="ignore", category=FutureWarning)
 ANLS_DOCVQA_IMG_DIR = (
     "/home/work/workspace_bum/Tokenpruning/FastV/data/docvqa/spdocvqa_images"
@@ -85,6 +86,13 @@ def parse_args():
         action="store_true",
         help="sequential_prune",
     )
+    parser.add_argument(
+        "--prune-step",
+        type=int,
+        required=False,
+        default=10,
+        help="prune_step_size",
+    )
     args = parser.parse_args()
     if args.use_fast_v:
         args.output_pth = os.path.join(
@@ -129,9 +137,8 @@ def save(results, args):
                 )
                 exit(0)
 
-        json.dump(
-            filtered_results, open(args.output_pth, "w"), ensure_ascii=False, indent=4
-        )
+        with open(args.output_pth, "w", encoding="utf-8") as f:
+            json.dump(filtered_results, f, ensure_ascii=False, indent=4)
         print(f"Saved {len(filtered_results)} results to {args.output_pth}")
     else:
         if os.path.exists(args.output_pth):
@@ -140,7 +147,9 @@ def save(results, args):
                     f"{args.output_pth} exists. Please pass `overwrite=True` to avoid unwanted overwriting."
                 )
                 exit(0)
-        json.dump(results, open(args.output_pth, "w"), ensure_ascii=False, indent=4)
+
+        with open(args.output_pth, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=4)
 
 
 def main(args):
@@ -223,23 +232,42 @@ def main(args):
             )
         lc_dataloader = DataLoader(
             dataset=lc_dataset,
-            batch_size=1,
+            batch_size=args.batch_image,
             shuffle=False,
             num_workers=8,
             collate_fn=lc_dataset.collate_fn,
             pin_memory=True,
         )
-        # lc_dataloader = accelerator.prepare_data_loader(lc_dataloader, device_placement=True)
-
         # dataloader 반복문
+        total_batch_time = 0
         for batch_idx, batch in enumerate(tqdm(lc_dataloader)):
-            # 데이터로더에서 데이터 꺼내는 시간 측정
-            # output 구하는 시간 측정
-            outputs = worker(
-                device=device, **batch
-            )  # list[dict], with the key "answer" added to each item
+            batch_start_time = time.time()  # Start time for the batch
+            outputs = worker(device=device, **batch)  # list[dict], with the key "answer" added to each item
+            batch_end_time = time.time()  # End time for the batch
+            
+            batch_time = batch_end_time - batch_start_time
+            total_batch_time += batch_time
+            
             all_predictions = outputs
             prediction_results.extend(all_predictions)
+        print(f"Total time elapsed: {total_batch_time} seconds")
+
+        # Define CSV file path
+        csv_file = 'execution_times.csv'
+
+        # Check if CSV file exists
+        file_exists = os.path.isfile(csv_file)
+
+        # Open the CSV file in append mode and write the elapsed time
+        with open(csv_file, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            
+            # If file doesn't exist, write the header first
+            if not file_exists:
+                writer.writerow(["name", "Elapsed Time (seconds)"])
+            
+            # Write the batch index and elapsed time
+            writer.writerow([args.output_dir, total_batch_time])
 
         # remove the repetition
         prediction_results = list(
@@ -273,11 +301,10 @@ def main(args):
                 pin_memory=True,
             )
             for batch in tqdm(lc_dataloader):
-                outputs = worker(
-                    device=device, **batch
-                )  # list[dict], with the key "answer" added to each item
+                outputs = worker(device=device, **batch)  # list[dict], with the key "answer" added to each item
                 all_predictions = outputs
                 prediction_results.extend(all_predictions)
+                # print(outputs)
             # remove the repetition
             prediction_results = list(
                 {item["sample_id"]: item for item in prediction_results}.values()
@@ -288,8 +315,6 @@ def main(args):
 
     save(prediction_results, args)
 
-
 if __name__ == "__main__":
     args = parse_args()
     main(args)
-    print("Done gen\n\n")
