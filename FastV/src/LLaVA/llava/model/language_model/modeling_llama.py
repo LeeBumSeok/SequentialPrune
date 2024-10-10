@@ -114,6 +114,56 @@ class LlamaRMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
+class LlamaRotaryEmbedding_v2(nn.Module):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0):
+        super().__init__()
+        self.scaling_factor = scaling_factor
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float().to(device) / self.dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # For BC we register cos and sin cached
+        self.max_seq_len_cached = max_position_embeddings
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=torch.int64).type_as(self.inv_freq)
+        t = t / self.scaling_factor
+        freqs = torch.outer(t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("_cos_cached", emb.cos().to(torch.get_default_dtype()), persistent=False)
+        self.register_buffer("_sin_cached", emb.sin().to(torch.get_default_dtype()), persistent=False)
+
+    @property
+    def sin_cached(self):
+        logger.warning_once(
+            "The sin_cached attribute will be removed in 4.39. Bear in mind that its contents changed in v4.38. Use "
+            "the forward method of RoPE from now on instead. It is not used in the `LlamaAttention` class"
+        )
+        return self._sin_cached
+
+    @property
+    def cos_cached(self):
+        logger.warning_once(
+            "The cos_cached attribute will be removed in 4.39. Bear in mind that its contents changed in v4.38. Use "
+            "the forward method of RoPE from now on instead. It is not used in the `LlamaAttention` class"
+        )
+        return self._cos_cached
+
+    @torch.no_grad()
+    def forward(self, x, position_ids):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        # Force float32 since bfloat16 loses precision on long contexts
+        # See https://github.com/huggingface/transformers/pull/29285
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 class LlamaRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
@@ -152,13 +202,15 @@ class LlamaRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
+        
         if seq_len > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
+        # print(seq_len)
         return (
             self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
             self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
         )
+
 
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
@@ -250,6 +302,33 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
+
+    return q_embed, k_embed
+
+def apply_rotary_pos_emb_v2(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        position_ids (`torch.Tensor`, *optional*):
+            Deprecated and unused.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -288,7 +367,6 @@ class LlamaMLP(nn.Module):
             down_proj = sum(down_proj)
         else:
             down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-
         return down_proj
 
 
@@ -341,7 +419,7 @@ class LlamaAttention(nn.Module):
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
-            self.rotary_emb = LlamaRotaryEmbedding(
+            self.rotary_emb = LlamaRotaryEmbedding_v2(
                 self.head_dim, max_position_embeddings=self.max_position_embeddings
             )
         else:
@@ -426,12 +504,8 @@ class LlamaAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, position_ids
-        )
-
+        cos, sin = self.rotary_emb(value_states, position_ids)
+        query_states, key_states = apply_rotary_pos_emb_v2(query_states, key_states, cos, sin)
         if past_key_value is not None:
             # reuse k, v, self_attention
             key_states = torch.cat([past_key_value[0], key_states], dim=2)
@@ -446,7 +520,6 @@ class LlamaAttention(nn.Module):
         attn_weights = torch.matmul(
             query_states, key_states.transpose(2, 3)
         ) / math.sqrt(self.head_dim)
-
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
             raise ValueError(
                 f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
@@ -493,7 +566,6 @@ class LlamaAttention(nn.Module):
 
         if not output_attentions:
             attn_weights = None
-
         return attn_output, attn_weights, past_key_value
 
 
@@ -534,10 +606,7 @@ class LlamaDecoderLayer(nn.Module):
         """
 
         residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
-
-        # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -547,13 +616,10 @@ class LlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
         )
         hidden_states = residual + hidden_states
-
-        # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-
         outputs = (hidden_states,)
 
         if output_attentions:
@@ -711,6 +777,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self.fast_v_agg_layer = config.fast_v_agg_layer
         self.fast_v_inplace = config.fast_v_inplace
         self.fast_v_sequential_prune = config.fast_v_sequential_prune
+        self.prune_step = config.prune_step
 
     def reset_fastv(self):
         self.use_fast_v = self.config.use_fast_v
@@ -718,15 +785,37 @@ class LlamaModel(LlamaPreTrainedModel):
         self.fast_v_image_token_length = self.config.fast_v_image_token_length
         self.fast_v_attention_rank = self.config.fast_v_attention_rank
         self.fast_v_agg_layer = self.config.fast_v_agg_layer
+        self.fast_v_inplace = self.config.fast_v_inplace
         self.fast_v_sequential_prune = self.config.fast_v_sequential_prune
-        ic(self.use_fast_v)
-
+        self.prune_step = self.config.prune_step
+        ic(self.use_fast_v, 
+            self.fast_v_sys_length, 
+            self.fast_v_image_token_length, 
+            self.fast_v_attention_rank, 
+            self.fast_v_agg_layer,
+            self.fast_v_inplace,
+            self.fast_v_sequential_prune,
+            self.prune_step)
+        
     def get_input_embeddings(self):
         return self.embed_tokens
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
-
+        
+    def bipartite_soft_matching(self, keep_index, hidden_states, image_index, remain_length):
+        keep_index = torch.tensor(keep_index,dtype=torch.int64)
+        wo_keep_index = torch.arange(image_index, image_index + remain_length,device=keep_index.device)
+        wo_keep_index = wo_keep_index[~torch.isin(wo_keep_index, keep_index)]
+        keep_token = hidden_states[:,keep_index,:]
+        wo_keep_token = hidden_states[:,wo_keep_index,:]
+        similarity_matrix = F.cosine_similarity(keep_token.unsqueeze(2), wo_keep_token.unsqueeze(1), dim=-1)
+        max_indices = similarity_matrix.squeeze().max(dim=-2).indices
+        merged_indices = max_indices.unsqueeze(-1).repeat(1, 1, 4096)
+        selected = torch.gather(input=keep_token, dim=1, index=merged_indices)
+        merged = (wo_keep_token + selected) / 2
+        keep_token = torch.scatter_reduce(input=keep_token, dim=1, index=merged_indices, src=merged, reduce='mean', include_self=True) # include_self=True seems 
+        return keep_token
     # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
     def _prepare_decoder_attention_mask(
         self, attention_mask, input_shape, inputs_embeds, past_key_values_length
@@ -849,7 +938,10 @@ class LlamaModel(LlamaPreTrainedModel):
         next_decoder_cache = () if use_cache else None
 
         device = input_ids.device if input_ids is not None else inputs_embeds.device
-        # ic(self.use_fast_v)
+        pruned_indices_per_layer = []
+        prune_token_index = []
+        prune_token = []
+        remain_image_length = self.fast_v_image_token_length
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -872,24 +964,69 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_ids,
                     None,
                 )
-            elif self.fast_v_sequential_prune: # False
+            elif self.use_fast_v and self.fast_v_sequential_prune:
+                # print(idx)
                 USE_FAST_V = self.use_fast_v
                 SYS_LENGTH = self.fast_v_sys_length
                 IMAGE_TOKEN_LENGTH = self.fast_v_image_token_length
                 ATTENTION_RANK = self.fast_v_attention_rank
                 AGG_LAYER = self.fast_v_agg_layer
                 FASTV_INPLACE = self.fast_v_inplace
-
                 if AGG_LAYER:
                     assert AGG_LAYER > 0, "K should be larger than 0"
+                if USE_FAST_V and FASTV_INPLACE:
+                    if idx<AGG_LAYER:
+                        new_attention_mask = attention_mask
+                    # elif idx == len(self.layers) - 1:
+                    #     prune_token = torch.concat(prune_token,dim=1)
+                    #     prune_token_index = torch.concat(prune_token_index, dim=1)
 
-                if USE_FAST_V:
+                    #     hidden_states = torch.concat([prune_token, hidden_states],dim=1)
+                    #     position_ids = torch.concat([prune_token_index, position_ids],dim=1)
+                    #     new_attention_mask = attention_mask
+                    elif idx>=AGG_LAYER:
+                        ratio = self.prune_step / 100
+
+                        total_layers_to_prune = int(1 / ratio * ATTENTION_RANK)
+                        current_prune_ratio = ratio * (idx - AGG_LAYER + 1)
+                        if idx - AGG_LAYER < total_layers_to_prune:
+                            if idx - AGG_LAYER == total_layers_to_prune - 1:
+                                current_prune_ratio = ATTENTION_RANK
+                                # compute pruned tokens, generate fastv sign
+                            # ic(idx, ratio, total_layers_to_prune, current_prune_ratio)
+                        
+                            last_layer_attention = layer_outputs[1]
+                            # compute average attention over different head
+                            last_layer_attention = torch.mean(last_layer_attention, dim=1)[0]
+                            # generate new attention mask based on the average attention, sample the top ATTENTION_RANK tokens with highest attention
+                            last_layer_attention = last_layer_attention[-1]
+                            last_layer_attention = last_layer_attention[image_indices[0]:image_indices[0]+remain_image_length]
+                            # get the indexs of the top ATTENTION_RANK tokens
+                            top_attention_rank_index = last_layer_attention.topk(int((1 - current_prune_ratio) * IMAGE_TOKEN_LENGTH)).indices + int(image_indices[0])
+                            
+                            keep_indexs = torch.arange(int(image_indices[0])).tolist() + top_attention_rank_index.tolist() + torch.arange(int(image_indices[0])+remain_image_length,int(hidden_states.shape[1])).tolist()
+                            remain_image_length = int((1 - current_prune_ratio) * IMAGE_TOKEN_LENGTH)
+
+                            keep_indexs.sort()
+                            keep_indexs = torch.tensor(keep_indexs,dtype=torch.int64)
+
+                            # not_keep_indices = torch.arange(hidden_states.shape[1])
+                            # not_keep_indices = not_keep_indices[~torch.isin(not_keep_indices, keep_indexs)].sort().values
+                            # prune_token.append(hidden_states[:,not_keep_indices,:])
+                            # prune_token_index.append(position_ids[:,not_keep_indices])
+
+                            hidden_states = hidden_states[:,keep_indexs,:]
+
+                            new_seq_length = keep_indexs.shape[0]
+                            
+                            position_ids = position_ids[:,keep_indexs]
+
+                            new_attention_mask = self._prepare_decoder_attention_mask(
+                                None, (batch_size, new_seq_length), inputs_embeds, 0
+                            )
+                elif USE_FAST_V:
                     if idx < AGG_LAYER:
-                        new_attention_mask = torch.ones(
-                            (batch_size, seq_length_with_past),
-                            dtype=torch.bool,
-                            device=inputs_embeds.device,
-                        )
+                        new_attention_mask = torch.ones((batch_size, seq_length_with_past),dtype=torch.bool,device=inputs_embeds.device,)
                         new_attention_mask = self._prepare_decoder_attention_mask(
                             new_attention_mask,
                             (batch_size, seq_length),
@@ -971,6 +1108,7 @@ class LlamaModel(LlamaPreTrainedModel):
                                 + image_indices[0]
                             )
 
+                            
                             # 새로운 attention mask 생성
                             gen_attention_mask = torch.ones(
                                 (batch_size, seq_length_with_past),
@@ -985,7 +1123,6 @@ class LlamaModel(LlamaPreTrainedModel):
 
                             gen_attention_mask[:, image_token_indices] = False
                             gen_attention_mask[:, top_attention_rank_index] = True
-
                             gen_attention_mask = self._prepare_decoder_attention_mask(
                                 gen_attention_mask,
                                 (batch_size, seq_length),
@@ -1010,14 +1147,12 @@ class LlamaModel(LlamaPreTrainedModel):
                                     ]
                                 )
                             )
-
                             pruned_indices_per_layer = [pruned_indices_per_layer[-1]]
                         else:
-                            new_attention_mask = attention_mask
+                            new_attention_mask = gen_attention_mask
                     else:
                         new_attention_mask = attention_mask
 
-                # print(idx,hidden_states.shape,new_attention_mask.shape,position_ids.shape)
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=new_attention_mask,
@@ -1026,7 +1161,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                 )
-            else:
+            else: # usez
                 USE_FAST_V = self.use_fast_v
                 SYS_LENGTH = self.fast_v_sys_length
                 IMAGE_TOKEN_LENGTH = self.fast_v_image_token_length
@@ -1038,7 +1173,40 @@ class LlamaModel(LlamaPreTrainedModel):
                 FASTV_INPLACE = self.fast_v_inplace
                 if AGG_LAYER:
                     assert AGG_LAYER > 0, "K should be larger than 0"
-                if USE_FAST_V:
+                if USE_FAST_V and FASTV_INPLACE:
+                    if idx<AGG_LAYER:
+                        new_attention_mask = attention_mask
+                    elif idx==AGG_LAYER:
+                        # compute pruned tokens, generate fastv sign
+                        last_layer_attention = layer_outputs[1]
+                        # compute average attention over different head
+                        last_layer_attention = torch.mean(last_layer_attention, dim=1)[0]
+                        # generate new attention mask based on the average attention, sample the top ATTENTION_RANK tokens with highest attention
+                        last_layer_attention = last_layer_attention[-1]
+                        # get the attention in image token
+                        last_layer_attention = last_layer_attention[image_indices[0]:image_indices[0]+IMAGE_TOKEN_LENGTH]
+                        # get the indexs of the top ATTENTION_RANK tokens
+                        top_attention_rank_index = last_layer_attention.topk(ATTENTION_RANK).indices + image_indices[0]
+                        # breakpoint()
+                        # keep index
+                        keep_indexs = torch.cat(
+                            (torch.arange(int(image_indices[0]),device=device),
+                             top_attention_rank_index,
+                             torch.arange(int(image_indices[0])+IMAGE_TOKEN_LENGTH,seq_length_with_past,device=device)))
+                        # sort index
+                        # breakpoint()
+                        keep_indexs = keep_indexs.sort().values
+                        # update seq length
+                        new_seq_length = keep_indexs.shape[0]
+                        # filter hidden states
+                        hidden_states = hidden_states[:,keep_indexs,:]
+                        # update position ids
+                        position_ids = keep_indexs.unsqueeze(0)
+                        # update attention mask
+                        new_attention_mask = self._prepare_decoder_attention_mask(
+                            None, (batch_size, new_seq_length), inputs_embeds, 0
+                        )
+                elif USE_FAST_V:
                     if idx < AGG_LAYER:
                         new_attention_mask = torch.ones(
                             (batch_size, seq_length_with_past),
@@ -1095,7 +1263,6 @@ class LlamaModel(LlamaPreTrainedModel):
                                 last_layer_attention_avg_image.append(
                                     last_layer_attention_avg[idx]
                                 )
-                                
                             last_layer_attention_avg_image = torch.concat(last_layer_attention_avg_image, dim=0)
                             top_attention_rank_index = (
                                 last_layer_attention_avg_image
@@ -1111,45 +1278,22 @@ class LlamaModel(LlamaPreTrainedModel):
                             image_token_indices = torch.cat(image_token_indices)
                             gen_attention_mask[:, image_token_indices] = False 
                             gen_attention_mask[:, top_attention_rank_index] = True 
-
                             gen_attention_mask = self._prepare_decoder_attention_mask(
-                                gen_attention_mask,
-                                (batch_size, seq_length),
-                                inputs_embeds,
-                                past_key_values_length,
+                                gen_attention_mask,(batch_size, seq_length),inputs_embeds,past_key_values_length,
                             )
                             new_attention_mask = gen_attention_mask
 
                         else:
-                            gen_attention_mask = torch.ones(
-                                (batch_size, seq_length_with_past),
-                                dtype=torch.bool,
-                                device=inputs_embeds.device,
-                            )
-
-                            rand_image_attention_mask = [1] * ATTENTION_RANK + [0] * (
-                                IMAGE_TOKEN_LENGTH - ATTENTION_RANK
-                            )
+                            gen_attention_mask = torch.ones((batch_size, seq_length_with_past),dtype=torch.bool,device=inputs_embeds.device,)
+                            rand_image_attention_mask = [1] * ATTENTION_RANK + [0] * (IMAGE_TOKEN_LENGTH - ATTENTION_RANK)
                             random.shuffle(rand_image_attention_mask)
-
-                            gen_attention_mask[
-                                :, SYS_LENGTH : SYS_LENGTH + IMAGE_TOKEN_LENGTH
-                            ] = torch.tensor(
-                                rand_image_attention_mask,
-                                dtype=attention_mask.dtype,
-                                device=inputs_embeds.device,
-                            )
+                            gen_attention_mask[:, SYS_LENGTH : SYS_LENGTH + IMAGE_TOKEN_LENGTH] = torch.tensor(rand_image_attention_mask,dtype=attention_mask.dtype,device=inputs_embeds.device,)
                             gen_attention_mask = self._prepare_decoder_attention_mask(
-                                gen_attention_mask,
-                                (batch_size, seq_length),
-                                inputs_embeds,
-                                past_key_values_length,
+                                gen_attention_mask,(batch_size, seq_length),inputs_embeds,past_key_values_length,
                             )
                             new_attention_mask = gen_attention_mask
-
                     else:
                         new_attention_mask = gen_attention_mask
-
                 else:
                     new_attention_mask = attention_mask
 
@@ -1171,7 +1315,6 @@ class LlamaModel(LlamaPreTrainedModel):
                 pass
                 # all_self_attns += (layer_outputs[1],)
         hidden_states = self.norm(hidden_states)
-
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
@@ -1183,6 +1326,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 for v in [hidden_states, next_cache, all_hidden_states, all_self_attns]
                 if v is not None
             )
+        
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
