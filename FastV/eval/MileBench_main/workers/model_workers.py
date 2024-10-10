@@ -4,6 +4,7 @@ from PIL import Image
 import torch
 from icecream import ic
 from torch.cuda.amp import autocast
+
 ######################## Multi-image application ########################
 
 
@@ -80,7 +81,8 @@ class LLaVA(BaseWorker):
                 if images_path == []:
                     image_tensor = None
                 else:
-                    image_tensor = process_images([
+                    image_tensor = process_images(
+                        [
                             Image.open(image_path).convert("RGB")
                             for image_path in images_path
                         ],

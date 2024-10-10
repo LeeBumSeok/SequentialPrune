@@ -96,8 +96,8 @@ def parse_args():
     args = parser.parse_args()
     if args.use_fast_v:
         args.output_pth = os.path.join(
-                args.output_dir, f"{args.dataset_name}/pred.json"
-            )
+            args.output_dir, f"{args.dataset_name}/pred.json"
+        )
     else:
         args.output_pth = os.path.join(
             args.output_dir, f"{args.model_name}/{args.dataset_name}/pred.json"
@@ -202,7 +202,7 @@ def main(args):
         raise ValueError
     config = models_configs[args.model_name]
     config.device = device
-    worker = worker_class.from_config(config=config,args=args)
+    worker = worker_class.from_config(config=config, args=args)
     # prepare model for accelerator
     # worker.model = accelerator.prepare(worker.model)
 
@@ -304,7 +304,6 @@ def main(args):
                 outputs = worker(device=device, **batch)  # list[dict], with the key "answer" added to each item
                 all_predictions = outputs
                 prediction_results.extend(all_predictions)
-                # print(outputs)
             # remove the repetition
             prediction_results = list(
                 {item["sample_id"]: item for item in prediction_results}.values()
