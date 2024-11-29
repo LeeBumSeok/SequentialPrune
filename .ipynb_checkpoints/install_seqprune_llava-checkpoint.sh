@@ -4,5 +4,3 @@ cd SequentialPrune/src
 bash setup_llava.sh
 cd ../eval/VLMEvalKit
 pip install -e .
-cd ../../src
-bash setup_llava.sh
