@@ -1,4 +1,4 @@
-# <p align="center">Sequencial Prune</p>
+# <p align="center">Sequential Prune</p>
 
 <h3 align="center">
   <p>This repository contains the official implementation of <b>Sequential Prune: Progressive Visual Token Reduction for Improving the Inference Efficiency of Large Vision-Language Models</b></p>
